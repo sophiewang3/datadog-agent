@@ -17,16 +17,11 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/api/util"
 )
 
-var (
-	tlsKeyPair  *tls.Certificate
-	tlsCertPool *x509.CertPool
-	tlsAddr     string
-)
-
 // validateToken - validates token for legacy API
 func validateToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := util.Validate(w, r); err != nil {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -46,13 +41,9 @@ func parseToken(token string) (interface{}, error) {
 	return struct{}{}, nil
 }
 
-func buildSelfSignedKeyPair() ([]byte, []byte) {
-
+func buildSelfSignedKeyPair(extraHosts ...string) ([]byte, []byte) {
 	hosts := []string{"127.0.0.1", "localhost", "::1"}
-	ipcAddr, err := getIPCAddressPort()
-	if err == nil {
-		hosts = append(hosts, ipcAddr)
-	}
+	hosts = append(hosts, extraHosts...)
 	_, rootCertPEM, rootKey, err := security.GenerateRootCert(hosts, 2048)
 	if err != nil {
 		return nil, nil
@@ -67,26 +58,21 @@ func buildSelfSignedKeyPair() ([]byte, []byte) {
 	return rootCertPEM, rootKeyPEM
 }
 
-func initializeTLS() error {
-	cert, key := buildSelfSignedKeyPair()
+func initializeTLS(extraHosts ...string) (*tls.Certificate, *x509.CertPool, error) {
+	cert, key := buildSelfSignedKeyPair(extraHosts...)
 	if cert == nil {
-		return errors.New("unable to generate certificate")
+		return nil, nil, errors.New("unable to generate certificate")
 	}
 	pair, err := tls.X509KeyPair(cert, key)
 	if err != nil {
-		return fmt.Errorf("unable to generate TLS key pair: %v", err)
+		return nil, nil, fmt.Errorf("unable to generate TLS key pair: %v", err)
 	}
-	tlsKeyPair = &pair
-	tlsCertPool = x509.NewCertPool()
+
+	tlsCertPool := x509.NewCertPool()
 	ok := tlsCertPool.AppendCertsFromPEM(cert)
 	if !ok {
-		return fmt.Errorf("unable to add new certificate to pool")
+		return nil, nil, fmt.Errorf("unable to add new certificate to pool")
 	}
 
-	tlsAddr, err = getIPCAddressPort()
-	if err != nil {
-		return fmt.Errorf("unable to get IPC address and port: %v", err)
-	}
-
-	return nil
+	return &pair, tlsCertPool, nil
 }
